@@ -368,7 +368,7 @@ class AnimationPipeline(DiffusionPipeline):
         else:
             if latents.shape != shape:
                 raise ValueError(f"Unexpected latents shape, got {latents.shape}, expected {shape}")
-            latents = latents.to(device)
+            latents = latents.to(device=device, dtype=dtype)
 
         # scale the initial noise by the standard deviation required by the scheduler
         latents = latents * self.scheduler.init_noise_sigma
@@ -395,8 +395,13 @@ class AnimationPipeline(DiffusionPipeline):
         return_dict: bool = True,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
+<<<<<<< HEAD
         seq_policy=overlap_policy.uniform,
         fp16=False,
+=======
+        down_block_control: Optional[List[torch.FloatTensor]] = None,
+        mid_block_control: Optional[torch.FloatTensor] = None,
+>>>>>>> 611f17ba8b0104bd27dc991eae57ac337beb25e0
         **kwargs,
     ):
         # Default height and width to unet
@@ -467,12 +472,25 @@ class AnimationPipeline(DiffusionPipeline):
                         .repeat(2 if do_classifier_free_guidance else 1, 1, 1, 1, 1)
                     latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-                    # predict the noise residual
-                    with torch.autocast('cuda', enabled=fp16, dtype=torch.float16):
-                        pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings)
+                # predict the noise residual
+                with torch.autocast('cuda', enabled=fp16, dtype=torch.float16):
+                    pred = self.unet(
+                        latent_model_input, 
+                        t, 
+                        encoder_hidden_states=text_embeddings,
+                        down_block_additional_residuals=[x.to(self.device) for x in down_block_control[i]] if down_block_control is not None else None,
+                        mid_block_additional_residual=mid_block_control[i].to(self.device) if mid_block_control is not None else None,
+                    ).sample.to(dtype=latents_dtype)
                     noise_pred[:, :, seq] += pred.sample.to(dtype=latents_dtype, device=cpu)
                     counter[:, :, seq] += 1
                     progress_bar.update()
+                # noise_pred = []
+                # import pdb
+                # pdb.set_trace()
+                # for batch_idx in range(latent_model_input.shape[0]):
+                #     noise_pred_single = self.unet(latent_model_input[batch_idx:batch_idx+1], t, encoder_hidden_states=text_embeddings[batch_idx:batch_idx+1]).sample.to(dtype=latents_dtype)
+                #     noise_pred.append(noise_pred_single)
+                # noise_pred = torch.cat(noise_pred)
 
                 # perform guidance
                 if do_classifier_free_guidance:

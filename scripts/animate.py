@@ -16,6 +16,9 @@ from einops import rearrange, repeat
 from omegaconf import OmegaConf
 from safetensors import safe_open
 from tqdm.auto import tqdm
+import torch
+from omegaconf import OmegaConf
+from diffusers import AutoencoderKL, DDIMScheduler
 from transformers import CLIPTextModel, CLIPTokenizer
 
 from animatediff.models.unet import UNet3DConditionModel
@@ -25,6 +28,11 @@ from animatediff.utils.convert_from_ckpt import (convert_ldm_clip_checkpoint,
                                                  convert_ldm_vae_checkpoint)
 from animatediff.utils.convert_lora_safetensor_to_diffusers import convert_lora
 from animatediff.utils.util import save_videos_grid
+from animatediff.controlnet.controlnet_module import ControlnetModule
+from diffusers.utils.import_utils import is_xformers_available
+
+from safetensors import safe_open
+from pathlib import Path
 
 
 def main(args):
@@ -117,9 +125,23 @@ def main(args):
             pipeline.to("cuda")
             ### <<< create validation pipeline <<< ###
 
-            prompts = model_config.prompt
-            n_prompts = list(model_config.n_prompt) * len(prompts) if len(model_config.n_prompt) == 1 else model_config.n_prompt
+            down_features, mid_features = None, None
+            controlnet = None
+            if 'control' in model_config:
+                controlnet_config = {
+                    'video_length': args.L,
+                    'img_h': args.H,
+                    'img_w': args.W,
+                    'guidance_scale': model_config.guidance_scale,
+                    'steps': model_config.steps,
+                    'device': 'cuda',
+                    **model_config.control
+                }
+                controlnet = ControlnetModule(controlnet_config)
 
+            prompts      = model_config.prompt
+            n_prompts    = list(model_config.n_prompt) * len(prompts) if len(model_config.n_prompt) == 1 else model_config.n_prompt
+            
             random_seeds = model_config.get("seed", [-1])
             random_seeds = [random_seeds] if isinstance(random_seeds, int) else list(random_seeds)
             random_seeds = random_seeds * len(prompts) if len(random_seeds) == 1 else random_seeds
@@ -132,6 +154,9 @@ def main(args):
                 else:
                     torch.seed()
                 config[config_key].random_seed.append(torch.initial_seed())
+
+                if controlnet is not None:
+                    down_features, mid_features = controlnet(model_config.control.video_path, prompt, n_prompt, random_seed)
 
                 print(f"current seed: {torch.initial_seed()}")
                 print(f"sampling {prompt} ...")
@@ -147,6 +172,14 @@ def main(args):
                     strides=args.context_stride + 1,
                     overlap=args.context_overlap,
                     fp16=not args.fp32,
+                    negative_prompt     = n_prompt,
+                    num_inference_steps = model_config.steps,
+                    guidance_scale      = model_config.guidance_scale,
+                    width               = args.W,
+                    height              = args.H,
+                    video_length        = args.L,
+                    down_block_control  = down_features, 
+                    mid_block_control   = mid_features,
                 ).videos
                 samples.append(sample)
 
